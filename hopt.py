@@ -29,7 +29,8 @@ class Parameters(object):
     def get_dict(cls):
         return OrderedDict(sorted([(k, getattr(cls, k)) for k in dir(cls)
                                    if not k.startswith('__') and not
-                                   isinstance(getattr(cls, k), types.MethodType)]))
+                                   isinstance(getattr(cls, k), types.MethodType) and not
+                                   isinstance(getattr(cls, k), types.FunctionType)]))
 
     @classmethod
     def set_param(cls, name, value):
@@ -46,8 +47,9 @@ class Parameters(object):
 
     def copy_instance_to_class(self):
         d = OrderedDict(sorted([(k, getattr(self, k)) for k in dir(self)
-                                   if not k.startswith('__') and not
-                                   isinstance(getattr(self, k), types.MethodType)]))
+                                if not k.startswith('__') and not
+                                isinstance(getattr(self, k), types.MethodType) and not
+                                isinstance(getattr(self, k), types.FunctionType)]))
         for attr, value in d.items():
             setattr(self.__class__, attr, value)
 
@@ -66,7 +68,7 @@ class JsonEncoder(json.JSONEncoder):
 # Search
 # -------------------------------------------------------------------------------------------------
 
-def search(train_function, hyperparams, out_dir, iterations, max_epochs, train_data, val_data, multiprocessing=False):
+def search(train_function, hyperparams, out_dir, iterations, max_epochs, train_data=None, val_data=None, multiprocessing=False):
     # Checks
     if len(iterations) != len(max_epochs):
         raise ValueError("Iterations and max_epochs must have the same size.")
@@ -116,10 +118,10 @@ def train(train_function, hyperparams, search_status, train_data, val_data, stag
     # Cache search status
     search_status.stage = stage
     search_status.hyperparams = hyperparams()
-    search_status.hyperparams.copy_class_to_instance()
 
     # Start training process
     if multiprocessing:
+        search_status.hyperparams.copy_class_to_instance()
         p = Process(target=__process, args=(train_function, train_data, val_data, search_status))
         p.start()
         p.join()
@@ -142,4 +144,7 @@ def __process(function, train_data, val_data, search_status):
     search_status.copy_instance_to_class()
 
     # Run the function
-    function(train_data, val_data, search_status.hyperparams)
+    if train_data is None or val_data is None:
+        function(search_status.hyperparams)
+    else:
+        function(train_data, val_data, search_status.hyperparams)
