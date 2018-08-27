@@ -4,9 +4,11 @@ import glob
 import json 
 
 import datetime
-import matplotlib.pyplot as plt
 import re
+
+import numpy as np
 from keras.callbacks import Callback, ModelCheckpoint, CSVLogger, TensorBoard
+from keras.utils import Sequence
 
 from .hopt import JsonEncoder, SearchStatus
 
@@ -18,8 +20,11 @@ MODELS_DIRNAME = 'models'
 
 class HoptCallback(Callback):
 
-    def __init__(self):
+    def __init__(self, test_generators=None, plot_hyperparams=False):
         super(HoptCallback, self).__init__()
+
+        self.test_generators = test_generators
+        self.plot_hyperparams = plot_hyperparams
 
         self.model = None
         self.params = None
@@ -32,6 +37,7 @@ class HoptCallback(Callback):
 
         # Callbacks
         self.callbacks = None
+        self.test_callback = None
 
     def initialize(self):
 
@@ -63,9 +69,11 @@ class HoptCallback(Callback):
         saver = ModelCheckpoint(filepath=self.checkpoint_path, save_best_only=True, verbose=1, monitor='val_loss')
         cleaner = Cleaner(self.out_dir, self.timestamp)
         logger = CSVLogger(filename=os.path.normpath(self.log_path), separator=';')
-        hp_logger = HyperparamLogger(SearchStatus.hyperparams, self.hyperparam_dir, self.timestamp)
+        hp_logger = HyperparamLogger(SearchStatus.hyperparams, self.hyperparam_dir, self.timestamp,
+                                     self.plot_hyperparams)
         tensorboard = TensorBoard(self.tensorboard_dir)
-        self.callbacks = [saver, cleaner, logger, hp_logger, tensorboard]
+        self.test_callback = TestEvaluator(self.test_generators)
+        self.callbacks = [saver, cleaner, logger, hp_logger, tensorboard, self.test_callback]
 
         for c in self.callbacks:
             c.set_params(self.params)
@@ -81,8 +89,13 @@ class HoptCallback(Callback):
             c.on_epoch_begin(epoch, logs)
 
     def on_epoch_end(self, epoch, logs=None):
-        for c in self.callbacks:
-            c.on_epoch_end(epoch, logs)
+        test_logs = self.test_callback.on_epoch_end(epoch, logs)
+        full_logs = logs.copy()
+        full_logs.update(test_logs)
+        callbacks = self.callbacks[:]
+        callbacks.remove(self.test_callback)
+        for c in callbacks:
+            c.on_epoch_end(epoch, full_logs)
 
     def on_batch_begin(self, batch, logs=None):
         for c in self.callbacks:
@@ -115,11 +128,12 @@ class Cleaner(Callback):
 
 
 class HyperparamLogger(Callback):
-    def __init__(self, hyperparams, hyperparam_dir, timestamp):
+    def __init__(self, hyperparams, hyperparam_dir, timestamp, plot):
         super(HyperparamLogger, self).__init__()
         self.hyperparams = hyperparams
         self.hyperparam_dir = hyperparam_dir
         self.timestamp = timestamp
+        self.plot = plot
         self.file_path = os.path.join(hyperparam_dir, timestamp + ".json")
         self.top_val_loss = float("inf")
         self.top_val_loss_epoch = None
@@ -145,7 +159,8 @@ class HyperparamLogger(Callback):
         os.remove(self.file_path)
 
         # Plot hyperparams
-        plot_hyperparams(parentdir)
+        if self.plot:
+            plot_hyperparams(parentdir)
 
     def on_epoch_end(self, epoch, logs=None):
         val_loss = logs.get('val_loss')
@@ -164,6 +179,42 @@ class EarlyStopHugeLoss(Callback):
         if logs.get('val_loss') > self.min_loss:
             self.model.stop_training = True
 
+
+class TestEvaluator(Callback):
+
+    def __init__(self, generators):
+        super(TestEvaluator, self).__init__()
+        self.generators = generators
+
+    def on_epoch_end(self, epoch, logs=None):
+        if self.generators is None:
+            return
+        results = {}
+        for i, gen in enumerate(self.generators):
+            if gen is None:
+                continue
+            suffix = '' if len(self.generators) == 1 else str(i+1)
+            print('Evaluating on test{} set...'.format(suffix))
+            metrics = []
+
+            # Evaluate
+            # TODO: replace with evaluate_generator to use workers (cache generator length? workers=1 for generators)
+            if isinstance(gen, Sequence):
+                for k in range(len(gen)):
+                    x, y = gen[k]
+                    result = self.model.evaluate(x, y, verbose=0)
+                    metrics.append(result)
+            else:
+                for x, y in gen():
+                    result = self.model.evaluate(x, y, verbose=0)
+                    metrics.append(result)
+
+            metrics_names = ['test' + suffix + '_' + m for m in self.model.metrics_names]
+            metrics = np.mean(metrics, axis=0)
+            results.update(dict(zip(metrics_names, metrics)))
+        if results:
+            print(results)
+        return results
 
 
 # PARAMS = ['base_lr', 'dropout', 'batch_size', 'momentum', 'lr_decay', 'l2_penalty']
@@ -193,6 +244,7 @@ def plot_hyperparams(query):
 
 
 def plot_param(name, metric, dicts, save_path):
+    import matplotlib.pyplot as plt
     param_values = [x[name] for x in dicts]
     m = [x[metric] for x in dicts]
     try:
