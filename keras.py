@@ -2,13 +2,10 @@ from __future__ import absolute_import
 import os
 import glob
 import json 
-
 import datetime
 import re
 
-import numpy as np
 from keras.callbacks import Callback, ModelCheckpoint, CSVLogger, TensorBoard
-from keras.utils import Sequence
 
 from .hopt import JsonEncoder, SearchStatus
 
@@ -20,11 +17,12 @@ MODELS_DIRNAME = 'models'
 
 class HoptCallback(Callback):
 
-    def __init__(self, test_generators=None, plot_hyperparams=False):
+    def __init__(self, test_generators=None, plot_hyperparams=False, workers=1):
         super(HoptCallback, self).__init__()
 
         self.test_generators = test_generators
         self.plot_hyperparams = plot_hyperparams
+        self.workers = workers
 
         self.model = None
         self.params = None
@@ -182,35 +180,22 @@ class EarlyStopHugeLoss(Callback):
 
 class TestEvaluator(Callback):
 
-    def __init__(self, generators):
+    def __init__(self, generators, workers=1):
         super(TestEvaluator, self).__init__()
         self.generators = generators
+        self.workers = workers
 
     def on_epoch_end(self, epoch, logs=None):
         if self.generators is None:
             return
         results = {}
-        for i, gen in enumerate(self.generators):
-            if gen is None:
+        for i, generator in enumerate(self.generators):
+            if generator is None:
                 continue
             suffix = '' if len(self.generators) == 1 else str(i+1)
             print('Evaluating on test{} set...'.format(suffix))
-            metrics = []
-
-            # Evaluate
-            # TODO: replace with evaluate_generator to use workers (cache generator length? workers=1 for generators)
-            if isinstance(gen, Sequence):
-                for k in range(len(gen)):
-                    x, y = gen[k]
-                    result = self.model.evaluate(x, y, verbose=0)
-                    metrics.append(result)
-            else:
-                for x, y in gen():
-                    result = self.model.evaluate(x, y, verbose=0)
-                    metrics.append(result)
-
+            metrics = self.model.evaluate_generator(generator, workers=self.workers)
             metrics_names = ['test' + suffix + '_' + m for m in self.model.metrics_names]
-            metrics = np.mean(metrics, axis=0)
             results.update(dict(zip(metrics_names, metrics)))
         if results:
             print(results)
