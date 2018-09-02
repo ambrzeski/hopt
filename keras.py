@@ -17,9 +17,25 @@ MODELS_DIRNAME = 'models'
 
 class HoptCallback(Callback):
 
-    def __init__(self, test_generators=None, plot_hyperparams=False, workers=1):
+    def __init__(self, model_prefix='{val_loss:.4f}_{epoch:02d}', model_lower_better=True, model_monitor='val_loss',
+                 keep_models=1, test_generators=None, workers=1, plot_hyperparams=False):
+        """
+        Callback for hyper parameter search.
+
+        :param model_prefix: pattern for model filename prefix, default is: '{val_loss:.4f}_{epoch:02d}'
+        :param model_lower_better: True if for alphabetically sorted models first (lower is the best), False otherwise
+        :param model_monitor: metric to monitor for saving best model
+        :param keep_models: how many models to keep during each iterations; 0 keeps all models
+        :param test_generators: additional Keras Sequences to be evaluated during training as test sets
+        :param workers: workers to use for evaluating on test_generators
+        :param plot_hyperparams: should hyperparams be plotted? (requires matplotlib)
+        """
         super(HoptCallback, self).__init__()
 
+        self.model_prefix = model_prefix
+        self.model_lower_better = model_lower_better
+        self.model_monitor = model_monitor
+        self.keep_models = keep_models
         self.test_generators = test_generators
         self.plot_hyperparams = plot_hyperparams
         self.workers = workers
@@ -31,6 +47,7 @@ class HoptCallback(Callback):
         self.checkpoint_path = None
         self.log_path = None
         self.hyperparam_dir = None
+        self.models_dir = None
         self.tensorboard_dir = None
 
         # Callbacks
@@ -52,20 +69,21 @@ class HoptCallback(Callback):
         # Prepare dirs
         log_dir = os.path.join(self.out_dir, LOG_DIRNAME)
         self.hyperparam_dir = os.path.join(self.out_dir, HYPERPARAMS_DIRNAME)
-        models_dir = os.path.join(self.out_dir, MODELS_DIRNAME)
+        self.models_dir = os.path.join(self.out_dir, MODELS_DIRNAME)
         self.tensorboard_dir = os.path.join(log_dir, self.timestamp)
-        for d in [self.out_dir, log_dir, self.hyperparam_dir, models_dir, self.tensorboard_dir]:
+        for d in [self.out_dir, log_dir, self.hyperparam_dir, self.models_dir, self.tensorboard_dir]:
             if not os.path.exists(d):
                 os.makedirs(d)
 
         # Prepare paths
-        self.checkpoint_path = models_dir + "/{val_loss:.4f}_{loss:.4f}_{epoch:02d}_" + self.timestamp + ".hdf5"
+        self.checkpoint_path = "{}/{}_{}.hdf5".format(self.models_dir, self.model_prefix, self.timestamp)
         self.log_path = os.path.join(log_dir, self.timestamp + ".csv")
 
     def on_train_begin(self, logs=None):
         self.initialize()
-        saver = ModelCheckpoint(filepath=self.checkpoint_path, save_best_only=True, verbose=1, monitor='val_loss')
-        cleaner = Cleaner(self.out_dir, self.timestamp)
+        saver = ModelCheckpoint(filepath=self.checkpoint_path, save_best_only=True, verbose=1,
+                                monitor=self.model_monitor)
+        cleaner = Cleaner(self.out_dir, self.timestamp, self.model_lower_better, self.keep_models)
         logger = CSVLogger(filename=os.path.normpath(self.log_path), separator=';')
         hp_logger = HyperparamLogger(SearchStatus.hyperparams, self.hyperparam_dir, self.timestamp,
                                      self.plot_hyperparams)
@@ -111,18 +129,25 @@ class HoptCallback(Callback):
 
 
 class Cleaner(Callback):
-    def __init__(self, out_dir, timestamp):
+    def __init__(self, out_dir, timestamp, model_lower_better, keep_models):
         super(Cleaner, self).__init__()
         self.out_dir = out_dir
         self.timestamp = timestamp
+        self.model_lower_better = model_lower_better
+        self.keep_models = keep_models
 
     def on_epoch_end(self, batch, logs=()):
-        saved_models = sorted(glob.glob(os.path.join(self.out_dir, MODELS_DIRNAME, "*{}.hdf5".format(self.timestamp))))
+        if self.keep_models > 0:
+            saved_models = sorted(glob.glob(os.path.join(self.out_dir, MODELS_DIRNAME, "*{}.hdf5".format(self.timestamp))))
+            if self.model_lower_better:
+                to_remove = saved_models[self.keep_models:]
+            else:
+                to_remove = saved_models[:-self.keep_models]
 
-        # Leave only best model, delete the rest
-        for path in saved_models[1:]:
-            print("Removing model: ", path)
-            os.remove(path)
+            # Leave only best model, delete the rest
+            for path in to_remove:
+                print("Removing model: ", path)
+                os.remove(path)
 
 
 class HyperparamLogger(Callback):
@@ -133,8 +158,6 @@ class HyperparamLogger(Callback):
         self.timestamp = timestamp
         self.plot = plot
         self.file_path = os.path.join(hyperparam_dir, timestamp + ".json")
-        self.top_val_loss = float("inf")
-        self.top_val_loss_epoch = None
 
     def on_train_begin(self, logs=None):
         # Dump hyperparams
@@ -143,28 +166,10 @@ class HyperparamLogger(Callback):
             json.dump(d, f, indent=4, cls=JsonEncoder)
 
     def on_train_end(self, logs=None):
-        # Dump hyperparams with loss and acc under new name
-        d = self.hyperparams.get_dict()
-        d['val_loss'] = self.top_val_loss
-        d['epoch'] = self.top_val_loss_epoch
-        parentdir = os.path.dirname(self.file_path)
-        new_path = os.path.join(parentdir, "{:.4f}_{:02d}_{}.json").format(self.top_val_loss,
-                                                                           self.top_val_loss_epoch, self.timestamp)
-        with open(new_path, 'w') as f:
-            json.dump(d, f, indent=4, cls=JsonEncoder)
-
-        # Remove old dumped hyperparams
-        os.remove(self.file_path)
-
         # Plot hyperparams
+        parent = os.path.dirname(self.file_path)
         if self.plot:
-            plot_hyperparams(parentdir)
-
-    def on_epoch_end(self, epoch, logs=None):
-        val_loss = logs.get('val_loss')
-        if val_loss < self.top_val_loss:
-            self.top_val_loss = val_loss
-            self.top_val_loss_epoch = epoch
+            plot_hyperparams(parent)
 
 
 class EarlyStopHugeLoss(Callback):
