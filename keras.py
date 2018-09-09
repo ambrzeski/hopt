@@ -5,6 +5,7 @@ import json
 import datetime
 import re
 
+import numpy as np
 import tensorflow as tf
 from keras.callbacks import Callback, ModelCheckpoint, CSVLogger, TensorBoard, K
 
@@ -204,23 +205,46 @@ class TestEvaluator(Callback):
 
     def __init__(self, generators, workers=1):
         super(TestEvaluator, self).__init__()
-        self.generators = generators
+        if isinstance(generators, list):
+            self.generators = generators
+        else:
+            self.generators = [generators]
         self.workers = workers
 
     def on_epoch_end(self, epoch, logs=None):
-        if self.generators is None:
+        if not self.generators:
             return
-        results = {}
+
+        metrics = []
+        metrics_names = []
         for i, generator in enumerate(self.generators):
             if generator is None:
                 continue
-            suffix = '' if len(self.generators) == 1 else str(i+1)
+
+            # Prepare test set name suffix
+            suffix = ''
+            if len(self.generators) > 1:
+                suffix += str(i+1)
+                if hasattr(generator, 'name') and generator.name:
+                    suffix += '_' + generator.name
+
             print('Evaluating on test{} set...'.format(suffix))
-            metrics = self.model.evaluate_generator(generator, workers=self.workers)
-            metrics_names = ['test' + suffix + '_' + m for m in self.model.metrics_names]
-            results.update(dict(zip(metrics_names, metrics)))
+            metrics.append(self.model.evaluate_generator(generator, workers=self.workers))
+            metrics_names.append(['test' + suffix + '_' + m for m in self.model.metrics_names])
+
+        # Calculate mean metrics for all test sets
+        if len(self.generators) > 1:
+            mean_metrics = np.mean(metrics, axis=0)
+            metrics.append(mean_metrics)
+            metrics_names.append(['test_' + m for m in self.model.metrics_names])
+
+        # Prepare the result
+        results = {}
+        for names, m in zip(metrics_names, metrics):
+            results.update(dict(zip(names, m)))
         if results:
             print(results)
+
         return results
 
 
