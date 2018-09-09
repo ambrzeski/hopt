@@ -5,7 +5,8 @@ import json
 import datetime
 import re
 
-from keras.callbacks import Callback, ModelCheckpoint, CSVLogger, TensorBoard
+import tensorflow as tf
+from keras.callbacks import Callback, ModelCheckpoint, CSVLogger, TensorBoard, K
 
 from .hopt import JsonEncoder, SearchStatus
 
@@ -18,7 +19,7 @@ MODELS_DIRNAME = 'models'
 class HoptCallback(Callback):
 
     def __init__(self, model_prefix='{val_loss:.4f}_{epoch:02d}', model_lower_better=True, model_monitor='val_loss',
-                 keep_models=1, test_generators=None, workers=1, plot_hyperparams=False):
+                 keep_models=1, save_tf_graphs=False, test_generators=None, workers=1, plot_hyperparams=False):
         """
         Callback for hyper parameter search.
 
@@ -26,6 +27,7 @@ class HoptCallback(Callback):
         :param model_lower_better: True if for alphabetically sorted models first (lower is the best), False otherwise
         :param model_monitor: metric to monitor for saving best model
         :param keep_models: how many models to keep during each iterations; 0 keeps all models
+        :param save_tf_graphs: save TensorFlow frozen graphs along with Keras models
         :param test_generators: additional Keras Sequences to be evaluated during training as test sets
         :param workers: workers to use for evaluating on test_generators
         :param plot_hyperparams: should hyperparams be plotted? (requires matplotlib)
@@ -36,8 +38,9 @@ class HoptCallback(Callback):
         self.model_lower_better = model_lower_better
         self.model_monitor = model_monitor
         self.keep_models = keep_models
+        self.save_tf_graphs = save_tf_graphs
         self.test_generators = test_generators
-        self.plot_hyperparams = plot_hyperparams
+        self.plot_hp = plot_hyperparams
         self.workers = workers
 
         self.model = None
@@ -81,16 +84,26 @@ class HoptCallback(Callback):
 
     def on_train_begin(self, logs=None):
         self.initialize()
-        saver = ModelCheckpoint(filepath=self.checkpoint_path, save_best_only=True, verbose=1,
-                                monitor=self.model_monitor)
+        callbacks = []
+
+        # Saver callbacks
+        if not self.save_tf_graphs:
+            saver = ModelCheckpoint(self.checkpoint_path, save_best_only=True, verbose=1, monitor=self.model_monitor)
+            callbacks.append(saver)
+        else:
+            saver = MultiGraphSaver(self.checkpoint_path, save_best_only=True, verbose=1, monitor=self.model_monitor)
+            callbacks.append(saver)
         cleaner = Cleaner(self.out_dir, self.timestamp, self.model_lower_better, self.keep_models)
+        callbacks.append(cleaner)   # Cleaner must be added after saver
+
+        # Remaining callbacks
         logger = CSVLogger(filename=os.path.normpath(self.log_path), separator=';')
-        hp_logger = HyperparamLogger(SearchStatus.hyperparams, self.hyperparam_dir, self.timestamp,
-                                     self.plot_hyperparams)
+        hp_logger = HyperparamLogger(SearchStatus.hyperparams, self.hyperparam_dir, self.timestamp, self.plot_hp)
         tensorboard = TensorBoard(self.tensorboard_dir)
         self.test_callback = TestEvaluator(self.test_generators)
-        self.callbacks = [saver, cleaner, logger, hp_logger, tensorboard, self.test_callback]
+        callbacks.extend([logger, hp_logger, tensorboard, self.test_callback])
 
+        self.callbacks = callbacks
         for c in self.callbacks:
             c.set_params(self.params)
             c.set_model(self.model)
@@ -138,16 +151,20 @@ class Cleaner(Callback):
 
     def on_epoch_end(self, batch, logs=()):
         if self.keep_models > 0:
-            saved_models = sorted(glob.glob(os.path.join(self.out_dir, MODELS_DIRNAME, "*{}.hdf5".format(self.timestamp))))
-            if self.model_lower_better:
-                to_remove = saved_models[self.keep_models:]
-            else:
-                to_remove = saved_models[:-self.keep_models]
+            exts = ["hdf5", "pb"]
+            queries = [os.path.join(self.out_dir, MODELS_DIRNAME, "*{}.{}".format(self.timestamp, ext)) for ext in exts]
+            for query in queries:
+                # Find models
+                saved_models = sorted(glob.glob(query))
+                if self.model_lower_better:
+                    to_remove = saved_models[self.keep_models:]
+                else:
+                    to_remove = saved_models[:-self.keep_models]
 
-            # Leave only best model, delete the rest
-            for path in to_remove:
-                print("Removing model: ", path)
-                os.remove(path)
+                # Leave only best model, delete the rest
+                for path in to_remove:
+                    print("Removing model: ", path)
+                    os.remove(path)
 
 
 class HyperparamLogger(Callback):
@@ -205,6 +222,61 @@ class TestEvaluator(Callback):
         if results:
             print(results)
         return results
+
+
+class MultiGraphSaver(ModelCheckpoint):
+
+    def on_train_begin(self, logs=None):
+
+        class TFModelWrapper:
+            def __init__(self, model):
+                self.model = model
+
+            def save(self, save_path, overwrite):
+                # Save Keras model
+                self.model.save(save_path, overwrite)
+
+                # Save TF graph
+                frozen_graph = self.freeze_session(K.get_session(), output_names=[self.model.output.op.name])
+                if save_path.endswith(".hdf5") or save_path.endswith(".h5"):
+                    save_path = save_path[:save_path.rfind('.')]
+                save_path += ".pb"
+                dirpath, filename = os.path.split(save_path)
+                tf.train.write_graph(frozen_graph, dirpath, filename, as_text=False)
+
+            @staticmethod
+            def freeze_session(session, keep_var_names=None, output_names=None, clear_devices=True):
+                """
+                Freezes the state of a session into a prunned computation graph.
+
+                Creates a new computation graph where variable nodes are replaced by
+                constants taking their current value in the session. The new graph will be
+                prunned so subgraphs that are not neccesary to compute the requested
+                outputs are removed.
+                @param session The TensorFlow session to be frozen.
+                @param keep_var_names A list of variable names that should not be frozen,
+                                      or None to freeze all the variables in the graph.
+                @param output_names Names of the relevant graph outputs.
+                @param clear_devices Remove the device directives from the graph for better portability.
+                @return The frozen graph definition.
+                """
+                from tensorflow.python.framework.graph_util import convert_variables_to_constants
+                graph = session.graph
+                with graph.as_default():
+                    freeze_var_names = list(
+                        set(v.op.name for v in tf.global_variables()).difference(keep_var_names or []))
+                    output_names = output_names or []
+                    output_names += [v.op.name for v in tf.global_variables()]
+                    input_graph_def = graph.as_graph_def()
+                    if clear_devices:
+                        for node in input_graph_def.node:
+                            node.device = ""
+                    frozen_graph = convert_variables_to_constants(session, input_graph_def,
+                                                                  output_names, freeze_var_names)
+                    return frozen_graph
+
+        super().on_train_begin()
+        self.model = TFModelWrapper(self.model)
 
 
 # PARAMS = ['base_lr', 'dropout', 'batch_size', 'momentum', 'lr_decay', 'l2_penalty']
