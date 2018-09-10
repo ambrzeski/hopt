@@ -218,7 +218,7 @@ class TestEvaluator(Callback):
         metrics = []
         metrics_names = []
         for i, generator in enumerate(self.generators):
-            if generator is None:
+            if generator is None or not len(generator):
                 continue
 
             # Prepare test set name suffix
@@ -233,7 +233,7 @@ class TestEvaluator(Callback):
             metrics_names.append(['test' + suffix + '_' + m for m in self.model.metrics_names])
 
         # Calculate mean metrics for all test sets
-        if len(self.generators) > 1:
+        if len(self.generators) > 1 and len(metrics):
             mean_metrics = np.mean(metrics, axis=0)
             metrics.append(mean_metrics)
             metrics_names.append(['test_' + m for m in self.model.metrics_names])
