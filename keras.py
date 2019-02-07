@@ -213,7 +213,7 @@ class TestEvaluator(Callback):
 
     def on_epoch_end(self, epoch, logs=None):
         if not self.generators:
-            return
+            return {}
 
         metrics = []
         metrics_names = []
