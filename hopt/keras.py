@@ -10,6 +10,7 @@ import tensorflow as tf
 from keras.callbacks import Callback, ModelCheckpoint, CSVLogger, TensorBoard, K
 
 from .hopt import JsonEncoder, SearchStatus
+from .utils import plot_hyperparams, create_dirs
 
 
 LOG_DIRNAME = 'log'
@@ -78,8 +79,8 @@ class HoptCallback(Callback):
         self.models_dir = os.path.join(self.out_dir, MODELS_DIRNAME)
         self.results_dir = os.path.join(self.out_dir, RESULTS_DIRNAME)
         self.tensorboard_dir = os.path.join(log_dir, self.timestamp)
-        for d in [self.out_dir, log_dir, self.hyperparam_dir, self.models_dir, self.tensorboard_dir, self.results_dir]:
-            os.makedirs(d, exist_ok=True)
+        dirs = [self.out_dir, log_dir, self.hyperparam_dir, self.models_dir, self.tensorboard_dir, self.results_dir]
+        create_dirs(dirs)
 
         # Prepare paths
         self.checkpoint_path = "{}/{}_{}.hdf5".format(self.models_dir, self.model_prefix, self.timestamp)
@@ -87,31 +88,66 @@ class HoptCallback(Callback):
 
     def on_train_begin(self, logs=None):
         self.initialize()
-        callbacks = []
+        self.callbacks = self.prepare_callbacks()
 
-        # Saver callbacks
-        if not self.save_tf_graphs:
-            saver = ModelCheckpoint(self.checkpoint_path, save_best_only=True, verbose=1, monitor=self.model_monitor)
-            callbacks.append(saver)
-        else:
-            saver = MultiGraphSaver(self.checkpoint_path, save_best_only=True, verbose=1, monitor=self.model_monitor)
-            callbacks.append(saver)
-        cleaner = Cleaner(self.out_dir, self.timestamp, self.model_lower_better, self.keep_models)
-        callbacks.append(cleaner)   # Cleaner must be added after saver
-
-        # Remaining callbacks
-        logger = CSVLogger(filename=os.path.normpath(self.log_path), separator=';')
-        hp_logger = HyperparamLogger(SearchStatus.hyperparams, self.hyperparam_dir, self.timestamp, self.plot_hp)
-        result_logger = BestResultLogger(self.model_monitor, self.results_dir, self.timestamp)
-        tensorboard = TensorBoard(self.tensorboard_dir)
-        self.test_callback = TestEvaluator(self.test_generators)
-        callbacks.extend([logger, hp_logger, result_logger, tensorboard, self.test_callback])
-
-        self.callbacks = callbacks
         for c in self.callbacks:
             c.set_params(self.params)
             c.set_model(self.model)
             c.on_train_begin(logs)
+
+    def prepare_callbacks(self):
+        """
+        Prepares callbacks for HoptCallback
+        """
+        callbacks = []
+
+        # Saver callback
+        saver_callback_cls = MultiGraphSaver if self.save_tf_graphs else ModelCheckpoint
+        saver = saver_callback_cls(
+            filepath=self.checkpoint_path,
+            save_best_only=True,
+            verbose=1,
+            monitor=self.model_monitor)
+        callbacks.append(saver)
+
+        # Cleaner callback - must be added after saver
+        cleaner = Cleaner(
+            out_dir=self.out_dir,
+            timestamp=self.timestamp,
+            model_lower_better=self.model_lower_better,
+            keep_models=self.keep_models)
+        callbacks.append(cleaner)
+
+        # Logger callback
+        logger = CSVLogger(
+            filename=os.path.normpath(self.log_path),
+            separator=';')
+        callbacks.append(logger)
+
+        # Hyper param logger callback
+        hp_logger = HyperparamLogger(
+            hyperparams=SearchStatus.hyperparams,
+            hyperparam_dir=self.hyperparam_dir,
+            timestamp=self.timestamp,
+            plot=self.plot_hp)
+        callbacks.append(hp_logger)
+
+        # Best result logger
+        result_logger = BestResultLogger(
+            monitored_metric=self.model_monitor,
+            results_dir=self.results_dir,
+            timestamp=self.timestamp)
+        callbacks.append(result_logger)
+
+        # Tensorboard callback
+        tensorboard = TensorBoard(log_dir=self.tensorboard_dir)
+        callbacks.append(tensorboard)
+
+        # Test evaluator callback
+        self.test_callback = TestEvaluator(generators=self.test_generators)
+        callbacks.append(self.test_callback)
+
+        return callbacks
 
     def on_train_end(self, logs=None):
         for c in self.callbacks:
@@ -342,58 +378,6 @@ class MultiGraphSaver(ModelCheckpoint):
 
         super().on_train_begin()
         self.model = TFModelWrapper(self.model)
-
-
-# PARAMS = ['base_lr', 'dropout', 'batch_size', 'momentum', 'lr_decay', 'l2_penalty']
-PARAMS = ['base_lr', 'lr_reduce_rate']
-METRICS = ['val_loss']
-PARAM_SCALE_HINTS = {'base_lr': 'log', 'lr_decay': 'log', 'l2_penalty': 'log'}
-METRIC_SCALE_HINTS = {}
-MAX_LOSS = 1.0
-
-
-def plot_hyperparams(query):
-    paths = glob.glob(query)
-    for path in paths:
-
-        # Read all dumped hyperparams
-        json_paths = glob.glob(os.path.join(path, "*_*_*.json"))  # *_* <- hack for skipping not ready (not renamed) dicts
-        dicts = []
-        for jp in json_paths:
-            with open(jp) as f:
-                dicts.append(json.load(f))
-
-        # Plot
-        for m in METRICS:
-            for p in PARAMS:
-                save_path = os.path.join(path, "{}_{}.png".format(m, p))
-                plot_param(p, m, dicts, save_path)
-
-
-def plot_param(name, metric, dicts, save_path):
-    import matplotlib.pyplot as plt
-    param_values = [x[name] for x in dicts]
-    m = [x[metric] for x in dicts]
-    try:
-        plt.clf()
-        plt.plot(param_values, m, 'ro')
-        plt.xlabel(name)
-        plt.ylabel(metric)
-
-        if metric == 'val_loss' and max(m) > MAX_LOSS:
-            plt.ylim([0, MAX_LOSS])
-
-        if metric in METRIC_SCALE_HINTS:
-            plt.yscale(METRIC_SCALE_HINTS[metric])
-
-        if name in PARAM_SCALE_HINTS:
-            plt.xscale(PARAM_SCALE_HINTS[name])
-
-        plt.savefig(save_path)
-        plt.clf()
-    except Exception as e:
-        plt.clf()
-        print("Error plotting hyperparams: ", e)
 
 
 def get_timestamp():
