@@ -14,6 +14,7 @@ from .hopt import JsonEncoder, SearchStatus
 
 LOG_DIRNAME = 'log'
 HYPERPARAMS_DIRNAME = 'hyperparams'
+RESULTS_DIRNAME = 'results'
 MODELS_DIRNAME = 'models'
 
 
@@ -52,6 +53,7 @@ class HoptCallback(Callback):
         self.log_path = None
         self.hyperparam_dir = None
         self.models_dir = None
+        self.results_dir = None
         self.tensorboard_dir = None
 
         # Callbacks
@@ -74,10 +76,10 @@ class HoptCallback(Callback):
         log_dir = os.path.join(self.out_dir, LOG_DIRNAME)
         self.hyperparam_dir = os.path.join(self.out_dir, HYPERPARAMS_DIRNAME)
         self.models_dir = os.path.join(self.out_dir, MODELS_DIRNAME)
+        self.results_dir = os.path.join(self.out_dir, RESULTS_DIRNAME)
         self.tensorboard_dir = os.path.join(log_dir, self.timestamp)
-        for d in [self.out_dir, log_dir, self.hyperparam_dir, self.models_dir, self.tensorboard_dir]:
-            if not os.path.exists(d):
-                os.makedirs(d)
+        for d in [self.out_dir, log_dir, self.hyperparam_dir, self.models_dir, self.tensorboard_dir, self.results_dir]:
+            os.makedirs(d, exist_ok=True)
 
         # Prepare paths
         self.checkpoint_path = "{}/{}_{}.hdf5".format(self.models_dir, self.model_prefix, self.timestamp)
@@ -100,9 +102,10 @@ class HoptCallback(Callback):
         # Remaining callbacks
         logger = CSVLogger(filename=os.path.normpath(self.log_path), separator=';')
         hp_logger = HyperparamLogger(SearchStatus.hyperparams, self.hyperparam_dir, self.timestamp, self.plot_hp)
+        result_logger = BestResultLogger(self.model_monitor, self.results_dir, self.timestamp)
         tensorboard = TensorBoard(self.tensorboard_dir)
         self.test_callback = TestEvaluator(self.test_generators)
-        callbacks.extend([logger, hp_logger, tensorboard, self.test_callback])
+        callbacks.extend([logger, hp_logger, result_logger, tensorboard, self.test_callback])
 
         self.callbacks = callbacks
         for c in self.callbacks:
@@ -190,6 +193,45 @@ class HyperparamLogger(Callback):
             plot_hyperparams(parent)
 
 
+class BestResultLogger(Callback):
+    def __init__(self, monitored_metric, results_dir, timestamp):
+        """
+        Saves results of the best model selected by the specified metric. Results are saved in json file.
+
+        :param monitored_metric: metric used to select the best model
+        :param results_dir: directory path to save the results
+        :param timestamp: timestamp of the training iteration, will be used as filename
+        """
+        super().__init__()
+        self.monitored_metric = monitored_metric
+        self.results_dir = results_dir
+        self.timestamp = timestamp
+        self.file_path = os.path.join(results_dir, timestamp + ".json")
+        self.best = None
+        self.best_val = None
+
+    def on_epoch_end(self, batch, logs=()):
+        if not self.best_val or logs[self.monitored_metric] >= self.best_val:
+            self.best = dict(logs)
+            print("Best result: ", self.best)
+            with open(self.file_path, 'w') as f:
+                json.dump(self.best, f, indent=4, cls=self.NumpyEncoder)
+
+    class NumpyEncoder(json.JSONEncoder):
+        """ Numpy types encoder """
+        def default(self, obj):
+            float_types = (np.float_, np.float16, np.float32, np.float64)
+            int_types = (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32,
+                         np.int64, np.uint8, np.uint16, np.uint32, np.uint64)
+            if isinstance(obj, int_types):
+                return int(obj)
+            elif isinstance(obj, float_types):
+                return float(obj)
+            elif isinstance(obj, (np.ndarray,)):
+                return obj.tolist()
+            return json.JSONEncoder.default(self, obj)
+
+
 class EarlyStopHugeLoss(Callback):
 
     def __init__(self, min_loss):
@@ -202,7 +244,6 @@ class EarlyStopHugeLoss(Callback):
 
 
 class TestEvaluator(Callback):
-
     def __init__(self, generators, workers=1):
         super(TestEvaluator, self).__init__()
         if isinstance(generators, list):
