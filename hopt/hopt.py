@@ -1,6 +1,5 @@
 from __future__ import absolute_import
 import types
-import json
 from collections import OrderedDict
 from multiprocessing import Process
 
@@ -12,7 +11,7 @@ from .randoms import Param
 # Parameters
 # -------------------------------------------------------------------------------------------------
 
-class Parameters(object):
+class Parameters:
     # TODO: overload def __setattr__(self, name, value) to recreate random params fields in case
     # of direct value assignments e.g. MyParams.learning_rate = 0.5
 
@@ -53,15 +52,25 @@ class Parameters(object):
         for attr, value in d.items():
             setattr(self.__class__, attr, value)
 
+    @classmethod
+    def serialize(cls):
+        d = cls.get_dict()
+        ranges = cls.get_ranges_dict()
+        key = "search_ranges"
+        while key in d:
+            key = "_" + key
+        d[key] = ranges
+        return d
 
-class JsonEncoder(json.JSONEncoder):
-
-    def default(self, obj):
-        # if isinstance(obj, aug.MixedAugmenter):
-        #     return obj.augmenters
-        # if isinstance(obj, aug.Augmenter):
-        #     return obj.name
-        return json.JSONEncoder.default(self, obj)
+    @classmethod
+    def get_ranges_dict(cls):
+        ranges = OrderedDict()
+        for k, param in cls.get_params():
+            param_range_dict = OrderedDict()
+            param_range_dict["type"] = param.__class__.__name__
+            param_range_dict.update(param.__dict__)
+            ranges[k] = param_range_dict
+        return ranges
 
 
 # -------------------------------------------------------------------------------------------------

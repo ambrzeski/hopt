@@ -9,20 +9,21 @@ import numpy as np
 import tensorflow as tf
 from keras.callbacks import Callback, ModelCheckpoint, CSVLogger, TensorBoard, K
 
-from .hopt import JsonEncoder, SearchStatus
-from .utils import plot_hyperparams, create_dirs
+from .hopt import SearchStatus
+from .utils import create_dirs
 
 
 LOG_DIRNAME = 'log'
 HYPERPARAMS_DIRNAME = 'hyperparams'
 RESULTS_DIRNAME = 'results'
 MODELS_DIRNAME = 'models'
+TENSORBOARD_DIRNAME = 'tensorboard'
 
 
 class HoptCallback(Callback):
 
     def __init__(self, model_prefix='{val_loss:.4f}_{epoch:02d}', model_lower_better=True, model_monitor='val_loss',
-                 keep_models=1, save_tf_graphs=False, test_generators=None, workers=1, plot_hyperparams=False):
+                 keep_models=1, save_tf_graphs=False, test_generators=None, workers=1):
         """
         Callback for hyper parameter search.
 
@@ -33,7 +34,6 @@ class HoptCallback(Callback):
         :param save_tf_graphs: save TensorFlow frozen graphs along with Keras models
         :param test_generators: additional Keras Sequences to be evaluated during training as test sets
         :param workers: workers to use for evaluating on test_generators
-        :param plot_hyperparams: should hyperparams be plotted? (requires matplotlib)
         """
         super(HoptCallback, self).__init__()
 
@@ -43,7 +43,6 @@ class HoptCallback(Callback):
         self.keep_models = keep_models
         self.save_tf_graphs = save_tf_graphs
         self.test_generators = test_generators
-        self.plot_hp = plot_hyperparams
         self.workers = workers
 
         self.model = None
@@ -78,7 +77,7 @@ class HoptCallback(Callback):
         self.hyperparam_dir = os.path.join(self.out_dir, HYPERPARAMS_DIRNAME)
         self.models_dir = os.path.join(self.out_dir, MODELS_DIRNAME)
         self.results_dir = os.path.join(self.out_dir, RESULTS_DIRNAME)
-        self.tensorboard_dir = os.path.join(log_dir, self.timestamp)
+        self.tensorboard_dir = os.path.join(self.out_dir, TENSORBOARD_DIRNAME, self.timestamp)
         dirs = [self.out_dir, log_dir, self.hyperparam_dir, self.models_dir, self.tensorboard_dir, self.results_dir]
         create_dirs(dirs)
 
@@ -128,19 +127,20 @@ class HoptCallback(Callback):
         hp_logger = HyperparamLogger(
             hyperparams=SearchStatus.hyperparams,
             hyperparam_dir=self.hyperparam_dir,
-            timestamp=self.timestamp,
-            plot=self.plot_hp)
+            timestamp=self.timestamp)
         callbacks.append(hp_logger)
 
         # Best result logger
         result_logger = BestResultLogger(
+            hyperparams=SearchStatus.hyperparams,
             monitored_metric=self.model_monitor,
             results_dir=self.results_dir,
+            tensorboard_dir=self.tensorboard_dir,
             timestamp=self.timestamp)
         callbacks.append(result_logger)
 
         # Tensorboard callback
-        tensorboard = TensorBoard(log_dir=self.tensorboard_dir)
+        tensorboard = TensorBoard(log_dir=self.tensorboard_dir, write_graph=False)
         callbacks.append(tensorboard)
 
         # Test evaluator callback
@@ -208,39 +208,36 @@ class Cleaner(Callback):
 
 
 class HyperparamLogger(Callback):
-    def __init__(self, hyperparams, hyperparam_dir, timestamp, plot):
+    def __init__(self, hyperparams, hyperparam_dir, timestamp):
         super(HyperparamLogger, self).__init__()
         self.hyperparams = hyperparams
         self.hyperparam_dir = hyperparam_dir
         self.timestamp = timestamp
-        self.plot = plot
         self.file_path = os.path.join(hyperparam_dir, timestamp + ".json")
 
     def on_train_begin(self, logs=None):
         # Dump hyperparams
-        d = self.hyperparams.get_dict()
+        d = self.hyperparams.serialize()
         with open(self.file_path, 'w') as f:
-            json.dump(d, f, indent=4, cls=JsonEncoder)
-
-    def on_train_end(self, logs=None):
-        # Plot hyperparams
-        parent = os.path.dirname(self.file_path)
-        if self.plot:
-            plot_hyperparams(parent)
+            json.dump(d, f, indent=4)
 
 
 class BestResultLogger(Callback):
-    def __init__(self, monitored_metric, results_dir, timestamp):
+    def __init__(self, hyperparams, monitored_metric, results_dir, tensorboard_dir, timestamp):
         """
         Saves results of the best model selected by the specified metric. Results are saved in json file.
 
+        :param hyperparams: Parameters class
         :param monitored_metric: metric used to select the best model
         :param results_dir: directory path to save the results
+        :param tensorboard_dir: directory path for tensorboard events
         :param timestamp: timestamp of the training iteration, will be used as filename
         """
         super().__init__()
+        self.hyperparams = hyperparams
         self.monitored_metric = monitored_metric
         self.results_dir = results_dir
+        self.tensorboard_dir = tensorboard_dir
         self.timestamp = timestamp
         self.file_path = os.path.join(results_dir, timestamp + ".json")
         self.best = None
@@ -252,6 +249,27 @@ class BestResultLogger(Callback):
             print("Best result: ", self.best)
             with open(self.file_path, 'w') as f:
                 json.dump(self.best, f, indent=4, cls=self.NumpyEncoder)
+
+    def on_train_end(self, logs=None):
+        # Plot hyperparams in tensorboard
+        skip_metrics = ["lr"]
+        with tf.summary.FileWriter(self.tensorboard_dir, None) as writer:
+            for metric, metric_value in self.best.items():
+                if metric not in skip_metrics:
+                    for param_name in self.hyperparams.get_ranges_dict():
+
+                        # Prepare summary
+                        summary = tf.Summary()
+                        summary.value.add(
+                            tag="hyperparams/{}/{}".format(metric, param_name),
+                            simple_value=metric_value)
+
+                        # Ugly hack to represent floats as integers in tensorboard
+                        param_value = getattr(self.hyperparams, param_name)
+                        if isinstance(param_value, float):
+                            param_value *= 10e6
+
+                        writer.add_summary(summary, param_value)
 
     class NumpyEncoder(json.JSONEncoder):
         """ Numpy types encoder """
