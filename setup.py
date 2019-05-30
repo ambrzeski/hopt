@@ -2,7 +2,7 @@ import setuptools
 
 setuptools.setup(
     name='hopt',
-    version='0.1.0',
+    version='0.2.0',
     author='Adam Brzeski',
     author_email='brzeski@eti.pg.edu.pl',
     description='Simple framework for hyperparameter optimization and cross-validation',
