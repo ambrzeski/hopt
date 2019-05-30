@@ -12,6 +12,25 @@ from .randoms import Param
 # -------------------------------------------------------------------------------------------------
 
 class Parameters:
+    """
+    Parent class for holding hyperparameters, which can be defined as class attributes. Parameters should be json
+    serializable. It can hold both regular parameters and search ranges defined in form of Params from randoms
+    module (e.g. hopt.randoms.Int).
+
+    Use by subclassing. Example:
+
+    from hopt import Parameters, randoms
+
+    class Hyperparams(Parameters):
+        epochs = 10
+        image_size = (512, 512)
+        step = randoms.Int(1, 20)
+        batch_size = randoms.IntChoice([4, 8, 16, 128])
+        dropout = randoms.Float(0.3, 0.7)
+        lr = randoms.FloatExp(10, -1, -5)
+        lr_decay = randoms.FloatChoice([0.1, 0.5, 0.95])
+    """
+
     # TODO: overload def __setattr__(self, name, value) to recreate random params fields in case
     # of direct value assignments e.g. MyParams.learning_rate = 0.5
 
@@ -77,18 +96,25 @@ class Parameters:
 # Search
 # -------------------------------------------------------------------------------------------------
 
-def search(train_function, hyperparams, out_dir, iterations, max_epochs, train_data=None, val_data=None, multiprocessing=False):
-    # Checks
-    if len(iterations) != len(max_epochs):
-        raise ValueError("Iterations and max_epochs must have the same size.")
+def search(train_function, hyperparams, out_dir, iterations, train_data=None, val_data=None, multiprocessing=False):
+    """
+    Initiates hyperparam search. Requires using hopt.keras.HoptCallback in Keras fit(). Before each iteration
+    hyperparams are automatically randomized.
 
+    :param train_function: function that performs training and validation which will be executed during search process
+    :param hyperparams: hopt.Parameters class containing hyperparams
+    :param out_dir: directory to save search results (models, logs)
+    :param iterations: number of search iterations
+    :param train_data: training data that will be passed to the train function
+    :param val_data: validation data that will be passed to the train function
+    :param multiprocessing: experimental, not safe to use
+    """
     search_status = SearchStatus()
     search_status.out_dir = out_dir
 
     # Run search iterations
-    for stage, iteration, max_epoch in zip(range(len(iterations)), iterations, max_epochs):
-        for _ in range(iteration):
-            train(train_function, hyperparams, search_status, train_data, val_data, stage, multiprocessing)
+    for _ in range(iterations):
+        __train(train_function, hyperparams, search_status, train_data, val_data, 0, multiprocessing)
 
 
 def crossval_search(train_function, hyperparams, out_dir, iterations, max_epochs, data, multiprocessing=False):
@@ -113,16 +139,12 @@ def crossval_search(train_function, hyperparams, out_dir, iterations, max_epochs
 
                 search_status.out_dir = os.path.join(out_dir, "split{}".format(fold))
 
-                train(train_function, hyperparams, search_status, train_data, val_data, stage, multiprocessing)
+                __train(train_function, hyperparams, search_status, train_data, val_data, stage, multiprocessing)
 
 
-def train(train_function, hyperparams, search_status, train_data, val_data, stage, multiprocessing=False):
+def __train(train_function, hyperparams, search_status, train_data, val_data, stage, multiprocessing=False):
     # Randomize hyperparams
     hyperparams.randomize()
-
-    if stage > 0:
-        # TODO: support multistage
-        pass
 
     # Cache search status
     search_status.stage = stage
