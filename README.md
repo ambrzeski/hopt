@@ -8,7 +8,7 @@ Pip installation for Python 3:
 ## Basic usage of parameter randomization
 
 Define your parameter search ranges:
-```
+```python
 from hopt import Parameters, randoms
 
 class HP(Parameters):
@@ -21,7 +21,7 @@ class HP(Parameters):
 
 After calling randomize() the parameters get new values:
 
-```
+```python
 HP.randomize()
 print("Your random param values are: ", dict(HP.get_dict()))
 ```
@@ -31,7 +31,7 @@ Your randomized param values are:  {'batch_size': 16, 'dropout': 0.4720486083354
 
 Your params are just regular ints and floats, there's no need for calling any get() or value() method:
 
-```
+```python
 current_iter = 10
 if current_iter % HP.step:
     lr = HP.lr * HP.lr_decay
@@ -43,7 +43,7 @@ Hopt enables fast and simple execution of hyperparam search while keeping the co
 
 First, define your parameter search ranges. You can also define static parameters. All params must be json serializable.
 
-```
+```python
 from hopt import Parameters, randoms, search
 
 class HP(Parameters):
@@ -56,7 +56,7 @@ class HP(Parameters):
 
 Define a regular Keras train function. Pass Parameters and data as arguments. Append HoptCallback to fit() callbacks:
 
-```
+```python
 def train(train_data, val_data, HP):
     # Callbacks
     lr_reduce = ReduceLROnPlateau(
@@ -64,8 +64,7 @@ def train(train_data, val_data, HP):
         verbose=1, monitor='val_loss')
     hopt_callback = HoptCallback(
         metric_monitor='val_loss',
-        metric_lower_better=False
-    )
+        metric_lower_better=False)
     callbacks = [lr_reduce, hopt_callback]
     
     # Model
@@ -82,9 +81,9 @@ def train(train_data, val_data, HP):
 
 Prepare data and run hyperparam search by using search() function:
 
-```
-train_data = some keras.utils.Sequence()
-val_data = some keras.utils.Sequence()
+```python
+train_data = <some keras.utils.Sequence>
+val_data = <some keras.utils.Sequence>
 
 search(
     train_function=train,
@@ -101,4 +100,4 @@ Sample hyperparams plots:
 
 ![image](https://user-images.githubusercontent.com/30234642/58647452-e4e91100-8307-11e9-8720-3e6c244acec4.png)
 
-Due to tensorboard limitations, param values are encoded as tensorboard *steps*. Unfortunately *steps* must be integers, hence hopts encodes float values by multiplying by 10^6 and converting to int (see *base_lr* plot, on the right). Please keep that in mind while reading values from float param plots.
+**Note:** Due to tensorboard limitations, param values are encoded as tensorboard *steps*. Unfortunately *steps* must be integers, hence hopts encodes float values by multiplying by 10^6 and converting to int (see *base_lr* plot, on the right). Please keep that in mind while reading values from float param plots.
