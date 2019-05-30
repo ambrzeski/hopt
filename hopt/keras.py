@@ -63,7 +63,8 @@ class HoptCallback(Callback):
 
     def initialize(self):
 
-        print(SearchStatus.__dict__)
+        print("Search status: ", SearchStatus.__dict__)
+        print("Hyperparams: ", dict(SearchStatus.hyperparams.serialize()))
         self.out_dir = os.path.expanduser(SearchStatus.out_dir)
 
         # Prepare timestamp
@@ -267,7 +268,7 @@ class BestResultLogger(Callback):
                         # Prepare summary
                         summary = tf.Summary()
                         summary.value.add(
-                            tag="hyperparams/{}/{}".format(metric, param_name),
+                            tag="hyperparams/{}/{}".format(param_name, metric),
                             simple_value=metric_value)
 
                         # Ugly hack to represent floats as integers in tensorboard
