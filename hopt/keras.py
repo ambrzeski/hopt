@@ -22,14 +22,14 @@ TENSORBOARD_DIRNAME = 'tensorboard'
 
 class HoptCallback(Callback):
 
-    def __init__(self, model_prefix='{val_loss:.4f}_{epoch:02d}', model_lower_better=True, model_monitor='val_loss',
+    def __init__(self, metric_monitor, metric_lower_better, model_prefix='{val_loss:.4f}_{epoch:02d}',
                  keep_models=1, save_tf_graphs=False, test_generators=None, workers=1):
         """
         Callback for hyper parameter search.
 
+        :param metric_monitor: metric to monitor for selecting best model (e.g. 'val_loss')
+        :param metric_lower_better: True if lower metric values indicate better model performance
         :param model_prefix: pattern for model filename prefix, default is: '{val_loss:.4f}_{epoch:02d}'
-        :param model_lower_better: True if for alphabetically sorted models first (lower is the best), False otherwise
-        :param model_monitor: metric to monitor for saving best model
         :param keep_models: how many models to keep during each iterations; 0 keeps all models
         :param save_tf_graphs: save TensorFlow frozen graphs along with Keras models
         :param test_generators: additional Keras Sequences to be evaluated during training as test sets
@@ -37,14 +37,15 @@ class HoptCallback(Callback):
         """
         super(HoptCallback, self).__init__()
 
+        self.metric_monitor = metric_monitor
+        self.metric_lower_better = metric_lower_better
         self.model_prefix = model_prefix
-        self.model_lower_better = model_lower_better
-        self.model_monitor = model_monitor
         self.keep_models = keep_models
         self.save_tf_graphs = save_tf_graphs
         self.test_generators = test_generators
         self.workers = workers
 
+        self.keras_metric_mode = 'min' if metric_lower_better else 'max'
         self.model = None
         self.params = None
         self.out_dir = None
@@ -106,14 +107,15 @@ class HoptCallback(Callback):
             filepath=self.checkpoint_path,
             save_best_only=True,
             verbose=1,
-            monitor=self.model_monitor)
+            monitor=self.metric_monitor,
+            mode=self.keras_metric_mode)
         callbacks.append(saver)
 
         # Cleaner callback - must be added after saver
         cleaner = Cleaner(
             out_dir=self.out_dir,
             timestamp=self.timestamp,
-            model_lower_better=self.model_lower_better,
+            model_lower_better=self.metric_lower_better,
             keep_models=self.keep_models)
         callbacks.append(cleaner)
 
@@ -133,7 +135,8 @@ class HoptCallback(Callback):
         # Best result logger
         result_logger = BestResultLogger(
             hyperparams=SearchStatus.hyperparams,
-            monitored_metric=self.model_monitor,
+            monitored_metric=self.metric_monitor,
+            metric_lower_better=self.metric_lower_better,
             results_dir=self.results_dir,
             tensorboard_dir=self.tensorboard_dir,
             timestamp=self.timestamp)
@@ -223,12 +226,13 @@ class HyperparamLogger(Callback):
 
 
 class BestResultLogger(Callback):
-    def __init__(self, hyperparams, monitored_metric, results_dir, tensorboard_dir, timestamp):
+    def __init__(self, hyperparams, monitored_metric, metric_lower_better, results_dir, tensorboard_dir, timestamp):
         """
         Saves results of the best model selected by the specified metric. Results are saved in json file.
 
         :param hyperparams: Parameters class
         :param monitored_metric: metric used to select the best model
+        :param metric_lower_better: True if lower metric values indicate better model performance
         :param results_dir: directory path to save the results
         :param tensorboard_dir: directory path for tensorboard events
         :param timestamp: timestamp of the training iteration, will be used as filename
@@ -236,15 +240,17 @@ class BestResultLogger(Callback):
         super().__init__()
         self.hyperparams = hyperparams
         self.monitored_metric = monitored_metric
+        self.metric_lower_better = metric_lower_better
         self.results_dir = results_dir
         self.tensorboard_dir = tensorboard_dir
         self.timestamp = timestamp
+        self.metric_improved = np.less_equal if metric_lower_better else np.greater_equal
         self.file_path = os.path.join(results_dir, timestamp + ".json")
         self.best = None
         self.best_val = None
 
     def on_epoch_end(self, batch, logs=()):
-        if not self.best_val or logs[self.monitored_metric] >= self.best_val:
+        if not self.best_val or self.metric_improved(logs[self.monitored_metric], self.best_val):
             self.best = dict(logs)
             print("Best result: ", self.best)
             with open(self.file_path, 'w') as f:
