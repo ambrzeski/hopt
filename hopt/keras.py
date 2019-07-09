@@ -1,7 +1,7 @@
 from __future__ import absolute_import
 import os
 import glob
-import json 
+import json
 import datetime
 import re
 
@@ -30,7 +30,7 @@ class HoptCallback(Callback):
         :param metric_monitor: metric to monitor for selecting best model (e.g. 'val_loss')
         :param metric_lower_better: True if lower metric values indicate better model performance
         :param model_prefix: pattern for model filename prefix, default is: '{val_loss:.4f}_{epoch:02d}'
-        :param keep_models: how many models to keep during each iterations; 0 keeps all models
+        :param keep_models: how many models to keep during each iterations; -1 keeps all models
         :param save_tf_graphs: save TensorFlow frozen graphs along with Keras models
         :param test_generators: additional Keras Sequences to be evaluated during training as test sets
         :param workers: workers to use for evaluating on test_generators
@@ -102,23 +102,25 @@ class HoptCallback(Callback):
         """
         callbacks = []
 
-        # Saver callback
-        saver_callback_cls = MultiGraphSaver if self.save_tf_graphs else ModelCheckpoint
-        saver = saver_callback_cls(
-            filepath=self.checkpoint_path,
-            save_best_only=True,
-            verbose=1,
-            monitor=self.metric_monitor,
-            mode=self.keras_metric_mode)
-        callbacks.append(saver)
+        if self.keep_models != 0:
 
-        # Cleaner callback - must be added after saver
-        cleaner = Cleaner(
-            out_dir=self.out_dir,
-            timestamp=self.timestamp,
-            model_lower_better=self.metric_lower_better,
-            keep_models=self.keep_models)
-        callbacks.append(cleaner)
+            # Saver callback
+            saver_callback_cls = MultiGraphSaver if self.save_tf_graphs else ModelCheckpoint
+            saver = saver_callback_cls(
+                filepath=self.checkpoint_path,
+                save_best_only=True,
+                verbose=1,
+                monitor=self.metric_monitor,
+                mode=self.keras_metric_mode)
+            callbacks.append(saver)
+
+            # Cleaner callback - must be added after saver
+            cleaner = Cleaner(
+                out_dir=self.out_dir,
+                timestamp=self.timestamp,
+                model_lower_better=self.metric_lower_better,
+                keep_models=self.keep_models)
+            callbacks.append(cleaner)
 
         # Logger callback
         logger = CSVLogger(
@@ -326,7 +328,7 @@ class TestEvaluator(Callback):
             # Prepare test set name suffix
             suffix = ''
             if len(self.generators) > 1:
-                suffix += str(i+1)
+                suffix += str(i + 1)
                 if hasattr(generator, 'name') and generator.name:
                     suffix += '_' + generator.name
 
