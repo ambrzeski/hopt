@@ -85,3 +85,18 @@ class FloatExp(float, Param):
             value = self.k * self.base ** power
             new_param = FloatExp(self.base, self.pow_a, self.pow_b, self.k, value)
             return new_param
+
+
+class StrChoice(str, Param):
+    def __new__(cls, values=None, value=""):
+        obj = str.__new__(cls, value)
+        obj.values = values
+        return obj
+
+    def randomize(self):
+        if self.values is None:
+            return self
+        else:
+            value = random.choice(self.values)
+            new_param = StrChoice(self.values, value)
+            return new_param

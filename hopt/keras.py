@@ -272,13 +272,21 @@ class BestResultLogger(Callback):
                         summary.value.add(
                             tag="hyperparams/{}/{}".format(param_name, metric),
                             simple_value=metric_value)
-
-                        # Ugly hack to represent floats as integers in tensorboard
                         param_value = getattr(self.hyperparams, param_name)
-                        if isinstance(param_value, float):
-                            param_value *= 10e6
-
+                        param_value = self.prepare_for_tf(param_value)
                         writer.add_summary(summary, param_value)
+
+    @staticmethod
+    def prepare_for_tf(param_value):
+        # Ugly hack to represent floats as integers in tensorboard
+        if isinstance(param_value, float):
+            param_value *= 10e6
+
+        # Convert string to a id integer
+        if isinstance(param_value, str):
+            param_value = param_value.values.index(param_value)
+
+        return param_value
 
     class NumpyEncoder(json.JSONEncoder):
         """ Numpy types encoder """
