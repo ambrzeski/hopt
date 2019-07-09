@@ -225,7 +225,17 @@ class HyperparamLogger(Callback):
         # Dump hyperparams
         d = self.hyperparams.serialize()
         with open(self.file_path, 'w') as f:
-            json.dump(d, f, indent=4)
+            json.dump(d, f, indent=4, cls=self.ForceEncoder)
+
+    class ForceEncoder(json.JSONEncoder):
+        """
+        Forces serialization by encoding non-serializable attributes as strings.
+        """
+        def default(self, obj):
+            try:
+                return json.JSONEncoder.default(self, obj)
+            except TypeError:
+                return str(obj)
 
 
 class BestResultLogger(Callback):
