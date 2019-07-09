@@ -265,6 +265,7 @@ class BestResultLogger(Callback):
     def on_epoch_end(self, batch, logs=()):
         if not self.best_val or self.metric_improved(logs[self.monitored_metric], self.best_val):
             self.best = dict(logs)
+            self.best_val = logs[self.monitored_metric]
             print("Best result: ", self.best)
             with open(self.file_path, 'w') as f:
                 json.dump(self.best, f, indent=4, cls=self.NumpyEncoder)
