@@ -23,7 +23,8 @@ TENSORBOARD_DIRNAME = 'tensorboard'
 class HoptCallback(Callback):
 
     def __init__(self, metric_monitor, metric_lower_better, model_prefix='{val_loss:.4f}_{epoch:02d}',
-                 keep_models=1, save_tf_graphs=False, test_generators=None, workers=1, minor_metrics=None):
+                 keep_models=1, save_tf_graphs=False, test_generators=None,
+                 workers=1, minor_metrics=None, tensorboard_sorting=False):
         """
         Callback for hyper parameter search.
 
@@ -35,6 +36,7 @@ class HoptCallback(Callback):
         :param test_generators: additional Keras Sequences to be evaluated during training as test sets
         :param workers: workers to use for evaluating on test_generators
         :param minor_metrics: metric names to ignore in tensorboard and printing
+        :param tensorboard_sorting: if True, changes names in TensorBoard to allow plot grouping (eg. accuracy/train, loss/val)
         """
         super(HoptCallback, self).__init__()
 
@@ -58,6 +60,7 @@ class HoptCallback(Callback):
         self.results_dir = None
         self.tensorboard_dir = None
         self.minor_metrics = minor_metrics or {}
+        self.tensorboard_sorting = tensorboard_sorting
 
         # Callbacks
         self.callbacks = None
@@ -150,7 +153,7 @@ class HoptCallback(Callback):
 
         # Tensorboard callback
         tensorboard = FilteredTensorBoard(log_dir=self.tensorboard_dir, write_graph=False,
-                                          minor_metrics=self.minor_metrics)
+                                          minor_metrics=self.minor_metrics, sort=self.tensorboard_sorting)
         callbacks.append(tensorboard)
 
         # Test evaluator callback
@@ -444,9 +447,10 @@ def get_timestamp_from_path(path):
 
 
 class FilteredTensorBoard(TensorBoard):
-    def __init__(self, *a, minor_metrics=None, **kw):
+    def __init__(self, *a, minor_metrics=None, sort=False, **kw):
         super().__init__(*a, **kw)
         self.minor_metrics = minor_metrics or {}
+        self.sort = sort
 
     def _write_logs(self, logs, index):
         filtered_logs = {}
@@ -454,6 +458,13 @@ class FilteredTensorBoard(TensorBoard):
         for name, value in logs.items():
             if name in self.minor_metrics:
                 continue
-            filtered_logs[name] = value
+
+            if self.sort:
+                subset, metric = re.fullmatch(r"(val_|test\d+_[^_]+_|test_|)(.+)", name).groups()
+                if not subset: subset = "train"
+                subset = subset.strip("_")
+                filtered_logs[f"{metric}/{subset}"] = value
+            else:
+                filtered_logs[name] = value
 
         return super()._write_logs(filtered_logs, index)
