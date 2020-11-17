@@ -23,7 +23,7 @@ TENSORBOARD_DIRNAME = 'tensorboard'
 class HoptCallback(Callback):
 
     def __init__(self, metric_monitor, metric_lower_better, model_prefix='{val_loss:.4f}_{epoch:02d}',
-                 keep_models=1, save_tf_graphs=False, test_generators=None, workers=1):
+                 keep_models=1, save_tf_graphs=False, test_generators=None, workers=1, minor_metrics=None):
         """
         Callback for hyper parameter search.
 
@@ -34,6 +34,7 @@ class HoptCallback(Callback):
         :param save_tf_graphs: save TensorFlow frozen graphs along with Keras models
         :param test_generators: additional Keras Sequences to be evaluated during training as test sets
         :param workers: workers to use for evaluating on test_generators
+        :param minor_metrics: metric names to ignore in tensorboard and printing
         """
         super(HoptCallback, self).__init__()
 
@@ -56,6 +57,7 @@ class HoptCallback(Callback):
         self.models_dir = None
         self.results_dir = None
         self.tensorboard_dir = None
+        self.minor_metrics = minor_metrics or {}
 
         # Callbacks
         self.callbacks = None
@@ -142,15 +144,17 @@ class HoptCallback(Callback):
             metric_lower_better=self.metric_lower_better,
             results_dir=self.results_dir,
             tensorboard_dir=self.tensorboard_dir,
-            timestamp=self.timestamp)
+            timestamp=self.timestamp,
+            minor_metrics=self.minor_metrics)
         callbacks.append(result_logger)
 
         # Tensorboard callback
-        tensorboard = TensorBoard(log_dir=self.tensorboard_dir, write_graph=False)
+        tensorboard = FilteredTensorBoard(log_dir=self.tensorboard_dir, write_graph=False,
+                                          minor_metrics=self.minor_metrics)
         callbacks.append(tensorboard)
 
         # Test evaluator callback
-        self.test_callback = TestEvaluator(generators=self.test_generators)
+        self.test_callback = TestEvaluator(generators=self.test_generators, minor_metrics=self.minor_metrics)
         callbacks.append(self.test_callback)
 
         return callbacks
@@ -239,7 +243,8 @@ class HyperparamLogger(Callback):
 
 
 class BestResultLogger(Callback):
-    def __init__(self, hyperparams, monitored_metric, metric_lower_better, results_dir, tensorboard_dir, timestamp):
+    def __init__(self, hyperparams, monitored_metric, metric_lower_better,
+                 results_dir, tensorboard_dir, timestamp, minor_metrics=None):
         """
         Saves results of the best model selected by the specified metric. Results are saved in json file.
 
@@ -249,6 +254,7 @@ class BestResultLogger(Callback):
         :param results_dir: directory path to save the results
         :param tensorboard_dir: directory path for tensorboard events
         :param timestamp: timestamp of the training iteration, will be used as filename
+        :param minor_metrics: metric names to ignore in tensorboard and printing
         """
         super().__init__()
         self.hyperparams = hyperparams
@@ -261,12 +267,13 @@ class BestResultLogger(Callback):
         self.file_path = os.path.join(results_dir, timestamp + ".json")
         self.best = None
         self.best_val = None
+        self.minor_metrics = minor_metrics or {}
 
     def on_epoch_end(self, batch, logs=()):
         if not self.best_val or self.metric_improved(logs[self.monitored_metric], self.best_val):
             self.best = dict(logs)
             self.best_val = logs[self.monitored_metric]
-            print("Best result: ", self.best)
+            print("Best result: ", {k:v for k,v in self.best.items() if k not in self.minor_metrics})
             with open(self.file_path, 'w') as f:
                 json.dump(self.best, f, indent=4, cls=self.NumpyEncoder)
 
@@ -275,7 +282,7 @@ class BestResultLogger(Callback):
         skip_metrics = ["lr"]
         with tf.summary.FileWriter(self.tensorboard_dir, None) as writer:
             for metric, metric_value in self.best.items():
-                if metric not in skip_metrics:
+                if metric not in skip_metrics and metric not in self.minor_metrics:
                     for param_name in self.hyperparams.get_ranges_dict():
 
                         # Prepare summary
@@ -326,13 +333,14 @@ class EarlyStopHugeLoss(Callback):
 
 
 class TestEvaluator(Callback):
-    def __init__(self, generators, workers=1):
+    def __init__(self, generators, workers=1, minor_metrics=None):
         super(TestEvaluator, self).__init__()
         if isinstance(generators, list):
             self.generators = generators
         else:
             self.generators = [generators]
         self.workers = workers
+        self.minor_metrics = minor_metrics or {}
 
     def on_epoch_end(self, epoch, logs=None):
         if not self.generators:
@@ -365,8 +373,9 @@ class TestEvaluator(Callback):
         results = {}
         for names, m in zip(metrics_names, metrics):
             results.update(dict(zip(names, m)))
+
         if results:
-            print(results)
+            print({k:v for k,v in results.items() if k not in self.minor_metrics})
 
         return results
 
@@ -432,3 +441,19 @@ def get_timestamp():
 
 def get_timestamp_from_path(path):
     return re.split("[_.]", path)[-2]
+
+
+class FilteredTensorBoard(TensorBoard):
+    def __init__(self, *a, minor_metrics=None, **kw):
+        super().__init__(*a, **kw)
+        self.minor_metrics = minor_metrics or {}
+
+    def _write_logs(self, logs, index):
+        filtered_logs = {}
+
+        for name, value in logs.items():
+            if name in self.minor_metrics:
+                continue
+            filtered_logs[name] = value
+
+        return super()._write_logs(filtered_logs, index)
